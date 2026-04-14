@@ -32,8 +32,12 @@ services:
     command: >
       Rscript -e "
         library(mirai);
-        cat('Worker connecting...\n');
-        daemon('tcp://dispatcher:${MIRAI_PORT}')
+        repeat {
+          tryCatch(
+            { cat('Worker connecting...\n'); daemon('tcp://dispatcher:${MIRAI_PORT}'); break },
+            error = function(e) { cat('Connection refused, retrying in 2s...\n'); Sys.sleep(2) }
+          )
+        }
       "
     depends_on:
       dispatcher:
