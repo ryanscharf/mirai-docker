@@ -1,9 +1,12 @@
 library(mirai)
 
-# Connect to dispatcher
-# When running inside docker compose: tcp://dispatcher:5555
-# When running from outside:          tcp://<dispatcher-ip>:5555
-dispatcher_url <- Sys.getenv("MIRAI_DISPATCHER_URL", unset = "tcp://dispatcher:5555")
+# ---- configuration ----
+dispatcher_host <- "192.168.2.4"   # IP of the machine running the dispatcher
+dispatcher_port <- 5555             # must match MIRAI_PORT in .env
+n_timing_workers <- 4               # expected worker count for the parallelism timing test
+# ----------------------
+
+dispatcher_url <- sprintf("tcp://%s:%d", dispatcher_host, dispatcher_port)
 cat("Connecting to dispatcher at", dispatcher_url, "\n")
 daemons(url = dispatcher_url)
 
@@ -27,10 +30,10 @@ cat("PASSED\n")
 # 3. Timing test - confirm tasks run in parallel, not sequentially
 cat("\n--- Parallelism timing test (4 x 1s sleeps) ---\n")
 t <- system.time({
-  jobs <- lapply(1:4, \(i) mirai(Sys.sleep(1)))
+  jobs <- lapply(seq_len(n_timing_workers), \(i) mirai(Sys.sleep(1)))
   lapply(jobs, `[]`)
 })
-cat(sprintf("Elapsed: %.1fs (should be ~1s if workers >= 4)\n", t[["elapsed"]]))
+cat(sprintf("Elapsed: %.1fs (should be ~1s if workers >= %d)\n", t[["elapsed"]], n_timing_workers))
 
 # 4. Error handling - workers recover from failed tasks
 cat("\n--- Error handling ---\n")
