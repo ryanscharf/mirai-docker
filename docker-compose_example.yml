@@ -32,9 +32,12 @@ services:
     command: >
       Rscript -e "
         library(mirai);
+        host <- Sys.getenv('MIRAI_HOST');
+        if (host == '') stop('MIRAI_HOST is not set');
+        url <- paste0('tcp://', host, ':${MIRAI_PORT}');
         repeat {
           tryCatch(
-            { cat('Worker connecting...\n'); daemon(paste0('tcp://', Sys.getenv('MIRAI_HOST', unset = stop('MIRAI_HOST is not set')), ':${MIRAI_PORT}')); break },
+            { cat('Worker connecting to', url, '\n'); daemon(url); break },
             error = function(e) { cat('Connection refused, retrying in 2s...\n'); Sys.sleep(2) }
           )
         }
