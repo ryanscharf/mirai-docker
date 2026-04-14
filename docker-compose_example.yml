@@ -13,7 +13,7 @@ services:
     command: >
       Rscript -e "
         library(mirai);
-        daemons(n = 0, url = 'tcp://0.0.0.0:${MIRAI_PORT}');
+        daemons(url = 'tcp://0.0.0.0:${MIRAI_PORT}');
         cat('Dispatcher ready\n');
         Sys.sleep(Inf)
       "
