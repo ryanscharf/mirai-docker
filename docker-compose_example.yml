@@ -1,0 +1,35 @@
+services:
+
+  # Interactive R session with mirai loaded
+  r:
+    image: ghcr.io/ryanscharf/mirai-docker:latest
+    stdin_open: true
+    tty: true
+    command: R
+
+  # Dispatcher: accepts connections from workers and fans out mirai tasks
+  dispatcher:
+    image: ghcr.io/ryanscharf/mirai-docker:latest
+    command: >
+      Rscript -e "
+        library(mirai);
+        daemons(n = 0, url = 'tcp://0.0.0.0:${MIRAI_PORT}');
+        cat('Dispatcher ready\n');
+        Sys.sleep(Inf)
+      "
+    ports:
+      - "${MIRAI_PORT}:${MIRAI_PORT}"
+
+  # Workers: connect back to dispatcher and execute mirai tasks
+  worker:
+    image: ghcr.io/ryanscharf/mirai-docker:latest
+    command: >
+      Rscript -e "
+        library(mirai);
+        cat('Worker connecting...\n');
+        daemon('tcp://dispatcher:${MIRAI_PORT}')
+      "
+    depends_on:
+      - dispatcher
+    deploy:
+      replicas: 4
