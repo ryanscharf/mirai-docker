@@ -19,6 +19,12 @@ services:
       "
     ports:
       - "${MIRAI_PORT}:${MIRAI_PORT}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/${MIRAI_PORT:-5555}' 2>/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
   # Workers: connect back to dispatcher and execute mirai tasks
   worker:
@@ -30,6 +36,8 @@ services:
         daemon('tcp://dispatcher:${MIRAI_PORT}')
       "
     depends_on:
-      - dispatcher
+      dispatcher:
+        condition: service_healthy
+    restart: on-failure
     deploy:
       replicas: ${MIRAI_WORKERS:-4}
