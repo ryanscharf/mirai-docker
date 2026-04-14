@@ -42,6 +42,8 @@ services:
           )
         }
       "
+    environment:
+      - MIRAI_HOST
     healthcheck:
       test: ["CMD-SHELL", "pgrep -x Rscript > /dev/null || exit 1"]
       interval: 10s
