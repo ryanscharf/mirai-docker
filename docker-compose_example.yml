@@ -34,7 +34,7 @@ services:
         library(mirai);
         repeat {
           tryCatch(
-            { cat('Worker connecting...\n'); daemon('tcp://${MIRAI_HOST:-dispatcher}:${MIRAI_PORT}'); break },
+            { cat('Worker connecting...\n'); daemon(paste0('tcp://', Sys.getenv('MIRAI_HOST', unset = stop('MIRAI_HOST is not set')), ':${MIRAI_PORT}')); break },
             error = function(e) { cat('Connection refused, retrying in 2s...\n'); Sys.sleep(2) }
           )
         }
