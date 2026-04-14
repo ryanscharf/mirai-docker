@@ -32,4 +32,4 @@ services:
     depends_on:
       - dispatcher
     deploy:
-      replicas: 4
+      replicas: ${MIRAI_WORKERS:-4}
