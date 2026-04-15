@@ -1,17 +1,10 @@
 services:
 
-  # Your R session - this IS the dispatcher.
-  # Once inside, run: daemons(url = "tcp://0.0.0.0:5555")
-  # Workers will then connect to this session.
-  r:
-    image: ghcr.io/ryanscharf/mirai-docker:latest
-    stdin_open: true
-    tty: true
-    command: R
-    ports:
-      - "${MIRAI_PORT}:${MIRAI_PORT}"
-
-  # Workers connect to MIRAI_HOST:MIRAI_PORT (wherever the R session is running)
+  # Workers connect to your local R session (the dispatcher).
+  # Start the dispatcher locally first:
+  #   library(mirai)
+  #   daemons(url = "tcp://0.0.0.0:5555")
+  # Then: docker compose -f docker-compose_example.yml up -d
   worker:
     image: ghcr.io/ryanscharf/mirai-docker:latest
     command: >
