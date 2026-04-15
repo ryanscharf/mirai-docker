@@ -8,151 +8,184 @@ A minimal Docker image for the [`mirai`](https://shikokuchuo.net/mirai/) R packa
 
 `mirai` ("future" in Japanese, 未来) provides a clean interface for asynchronous and parallel R evaluation. Unlike heavier frameworks such as `future` or `parallel`, `mirai` is designed around a minimal footprint and high throughput, using NNG as its transport layer rather than forking or socket abstractions built on POSIX primitives.
 
-This image packages `mirai` and its dependency `nanonext` into a `rocker/r-ver` base — the leanest official R Docker image — using a two-stage build to exclude compile-time tooling (cmake, headers) from the final layer.
+This image packages `mirai` and its dependency `nanonext` into a `rocker/r-ver` base — the leanest official R Docker image.
+
+---
+
+## How mirai networking works
+
+**Your R session is the dispatcher.** When you call `daemons(url = "tcp://0.0.0.0:port")`, your R session begins listening for worker connections on that port. Workers dial in and wait for tasks. There is no separate dispatcher process.
+
+```
+Your R session (Positron / RStudio / script)
+  └─ daemons(url = "tcp://0.0.0.0:5555")   ← listens on port 5555
+        ▲           ▲           ▲
+    worker-1    worker-2    worker-3        ← Docker containers on any machine
+```
+
+Workers can run on the same machine or on any machine that can reach your R session over the network.
 
 ---
 
 ## Image
 
 ```
-ghcr.io/<owner>/mirai-docker:latest
+ghcr.io/ryanscharf/mirai-docker:latest
 ```
 
-Built automatically on every push to `main` via GitHub Actions. Tagged `latest` on the default branch and `sha-<hash>` for every build.
+Built automatically on every push to `main` via GitHub Actions.
 
 ---
 
 ## Quick Start
 
-### Pull and run an interactive R session
+### 1. Start your R session as the dispatcher
 
-```bash
-docker pull ghcr.io/<owner>/mirai-docker:latest
-docker run --rm -it ghcr.io/<owner>/mirai-docker:latest
-```
+In Positron, RStudio, or any R session on your machine:
 
-### Run a one-shot script
-
-```bash
-docker run --rm \
-  -v "$(pwd)/script.R:/script.R" \
-  ghcr.io/<owner>/mirai-docker:latest \
-  Rscript /script.R
-```
-
----
-
-## Usage Patterns
-
-### 1. Basic Async Evaluation
-
-`mirai()` submits an expression for async evaluation and immediately returns a mirai object (analogous to a promise/future). The result is retrieved with `[]`.
-
-```r
-library(mirai)
-
-m <- mirai(Sys.sleep(1), .timeout = 5000)
-# ... do other work ...
-m[]  # blocks until result is ready, or timeout
-#> NULL
-```
-
-### 2. Local Daemons (Process Pool)
-
-`daemons()` launches a persistent pool of background R processes. Subsequent `mirai()` calls are dispatched to the pool without spawning a new process each time.
-
-```r
-library(mirai)
-
-daemons(4)  # 4 local worker processes
-
-results <- lapply(1:20, \(x) mirai(x^2, x = x))
-unlist(lapply(results, `[]`))
-#>  [1]   1   4   9  16  25  36  49  64  81 100 121 144 169 196 225 256 289 324 361 400
-
-daemons(0)  # shut down pool
-```
-
-### 3. Remote / Distributed Daemons
-
-Daemons can run on any reachable host. The dispatcher listens on a URL; workers call `daemon()` to connect back.
-
-**Dispatcher (coordinator container):**
 ```r
 library(mirai)
 daemons(url = "tcp://0.0.0.0:5555")
 ```
 
-**Worker containers:**
-```r
-library(mirai)
-daemon("tcp://<dispatcher-host>:5555")
+Your session is now listening for workers on port 5555.
+
+### 2. Start workers
+
+**Locally (same machine):**
+```bash
+MIRAI_HOST=127.0.0.1 docker compose -f docker-compose_example.yml up worker
 ```
 
-With Docker Compose this is straightforward — see the example below.
+**Remote machine (e.g. a NAS or server at 192.168.x.x):**
+```bash
+# On the remote machine — point workers at your machine's LAN IP
+MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
+```
 
-### 4. Integration with Promises / Shiny
+`MIRAI_HOST` is always the IP of the machine running your R session. Workers connect to it, not the other way around.
 
-`mirai` ships a `.promise` method, enabling direct use with the `promises` package and `shiny`:
+### 3. Check status
+
+Back in your R session:
+
+```r
+status()
+#> $connections
+#> [1] 4
+```
+
+### 4. Submit work
+
+```r
+m <- mirai(Sys.getenv("HOSTNAME"))
+m[]  # returns the worker container's hostname
+
+jobs <- lapply(1:20, \(x) mirai(x^2, x = x))
+unlist(lapply(jobs, `[]`))
+```
+
+---
+
+## Configuration
+
+Variables are set in `.env` (copy from `.env.example`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `MIRAI_PORT` | `5555` | Port your R session listens on and workers dial to |
+| `MIRAI_WORKERS` | `4` | Number of worker replicas to start |
+| `MIRAI_HOST` | *(required at runtime)* | IP of the machine running the R session |
+
+`MIRAI_HOST` is intentionally not in `.env` — it depends on which machine is running the R session and changes per deployment. Pass it inline:
+
+```bash
+MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
+```
+
+---
+
+## docker-compose_example.yml
+
+The compose file only contains the `worker` service. There is no dispatcher service — your R session fills that role.
+
+```yaml
+# Start your R session first:
+#   daemons(url = "tcp://0.0.0.0:5555")
+# Then start workers pointing at your machine:
+#   MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
+```
+
+Scale workers up or down:
+```bash
+MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker --scale worker=8
+```
+
+---
+
+## Testing
+
+`test_workers.R` runs four tests against a live worker pool:
+
+```r
+# Edit the config block at the top first:
+dispatcher_host <- "0.0.0.0"   # listen on all interfaces
+dispatcher_port <- 5555
+n_timing_workers <- 4
+```
+
+Run from your R session:
+```r
+source("test_workers.R")
+```
+
+The script will:
+1. Call `daemons()` to start listening
+2. Wait up to 60s for workers to connect
+3. Run smoke tests: hostnames, parallel computation, timing, error recovery
+
+Start workers on your remote machine before or after running the script — the script waits for them.
+
+---
+
+## Usage Patterns
+
+### Basic async evaluation
 
 ```r
 library(mirai)
-library(promises)
+daemons(url = "tcp://0.0.0.0:5555")
 
-daemons(2)
+m <- mirai(Sys.sleep(1))
+# ... do other work ...
+m[]
+```
+
+### Parallel computation
+
+```r
+jobs <- lapply(1:20, \(x) mirai(x^2, x = x))
+unlist(lapply(jobs, `[]`))
+```
+
+### Integration with promises / Shiny
+
+```r
+library(promises)
 
 mirai(expensive_computation(x), x = input$value) %...>%
   { output$result <- renderText(.) }
 ```
 
-### 5. Integration with `crew`
-
-[`crew`](https://wlandau.github.io/crew/) uses `mirai` daemons as its worker backend and is the recommended interface for `targets`-based pipelines:
+### Integration with `crew`
 
 ```r
 library(crew)
-
 controller <- crew_controller_local(workers = 4)
 controller$start()
 controller$push(name = "job1", command = sqrt(16))
 controller$wait()
 controller$pop()$result
-#> [[1]]
-#> [1] 4
-```
-
----
-
-## Docker Compose — Distributed Daemons
-
-```yaml
-services:
-  dispatcher:
-    image: ghcr.io/<owner>/mirai-docker:latest
-    command: >
-      Rscript -e "
-        library(mirai);
-        daemons(url = 'tcp://0.0.0.0:5555');
-        Sys.sleep(Inf)
-      "
-    ports:
-      - "5555:5555"
-
-  worker:
-    image: ghcr.io/<owner>/mirai-docker:latest
-    command: >
-      Rscript -e "
-        library(mirai);
-        daemon('tcp://dispatcher:5555')
-      "
-    depends_on:
-      - dispatcher
-    deploy:
-      replicas: 4
-```
-
-```bash
-docker compose up --scale worker=4
 ```
 
 ---
@@ -162,15 +195,14 @@ docker compose up --scale worker=4
 | Property | Value |
 |---|---|
 | Base image | `rocker/r-ver:4.4.2` |
-| Build strategy | Two-stage (builder + runtime) |
+| Build strategy | Single stage, cmake purged post-install |
 | R packages | `mirai`, `nanonext` |
-| Runtime system deps | `libssl3` |
-| Build-only deps | `cmake`, `libssl-dev` (excluded from final image) |
+| Runtime system deps | `libssl-dev` |
 | Default entrypoint | `R` (interactive) |
 
-### Why two-stage?
+### Why not two-stage?
 
-`nanonext` bundles NNG and compiles it from source at install time, requiring `cmake` and C build tooling. These are stripped in the second stage — only the compiled `.so` files and R package sources land in the final image, keeping it lean.
+`nanonext` compiles NNG from source and links against shared libraries present in the build environment. A two-stage copy of the R library directory leaves those runtime dependencies behind. Single stage with `apt purge cmake` after install is simpler and reliable.
 
 ---
 

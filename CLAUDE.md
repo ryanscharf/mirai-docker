@@ -6,7 +6,7 @@ Context file for LLM assistants working in this repository.
 
 ## What this repo is
 
-A minimal Docker image that packages the [`mirai`](https://shikokuchuo.net/mirai/) R package for async/parallel R evaluation. The image is built on `rocker/r-ver` (bare R, no RStudio, no tidyverse) using a two-stage Docker build to keep the final image small.
+A minimal Docker image that packages the [`mirai`](https://shikokuchuo.net/mirai/) R package for async/parallel R evaluation. The image is built on `rocker/r-ver` (bare R, no RStudio, no tidyverse).
 
 ---
 
@@ -14,12 +14,16 @@ A minimal Docker image that packages the [`mirai`](https://shikokuchuo.net/mirai
 
 ```
 .
-├── Dockerfile                        # Two-stage build: builder + runtime
+├── Dockerfile                        # Single-stage build: installs mirai, purges cmake
 ├── .dockerignore
+├── .env                              # MIRAI_PORT and MIRAI_WORKERS (not committed)
+├── .env.example                      # Reference copy of .env
+├── docker-compose_example.yml        # Worker service only — no dispatcher
+├── test_workers.R                    # Live integration test for a running worker pool
 ├── .github/
 │   └── workflows/
 │       └── docker-build.yml          # Builds and pushes to ghcr.io on push to main
-├── README.md                         # Whitepaper-style usage guide
+├── README.md
 └── CLAUDE.md                         # This file
 ```
 
@@ -27,74 +31,89 @@ A minimal Docker image that packages the [`mirai`](https://shikokuchuo.net/mirai
 
 ## Key design decisions
 
+### Your R session is the dispatcher
+
+mirai does not have a standalone dispatcher process. `daemons(url = "tcp://0.0.0.0:port")` makes the **calling R session** listen for worker connections on that port. Workers dial in using `daemon("tcp://host:port")`.
+
+Do not create a separate dispatcher container. It will not work — mirai's dispatcher is tightly coupled to the R session that created it, and there is no public API to run it as an independent service.
+
+### MIRAI_HOST is a runtime variable, not a config file setting
+
+`MIRAI_HOST` is the IP of the machine running the R session (the dispatcher). This changes depending on which machine the user is working from, so it must be passed at runtime:
+
+```bash
+MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
+```
+
+It is intentionally absent from `.env`. Workers fail immediately with a clear error if it is not set.
+
+### Single-stage Dockerfile
+
+A two-stage build was attempted (builder copies R library to runtime stage) but caused `nanonext` shared libraries to be missing at runtime. Single stage with `apt purge cmake` post-install is the correct approach.
+
 ### Base image: `rocker/r-ver`
+
 Chosen over `r-base` (Docker Hub) and other rocker variants (`rocker/rstudio`, `rocker/tidyverse`) because it is the smallest official R image with a reproducible R version pin and no GUI tooling.
-
-### Two-stage build
-`nanonext` (mirai's NNG transport layer) compiles NNG from source at install time and requires `cmake`. The builder stage installs cmake and compiles the packages; the runtime stage copies only the compiled R library, excluding cmake and C headers. This meaningfully reduces final image size.
-
-### Runtime dep: `libssl3`
-`nanonext` links against OpenSSL for TLS support. Only the shared library (`libssl3`) is needed at runtime — `libssl-dev` (headers + static lib) is build-only.
-
-### GitHub Actions: GHCR push
-The workflow pushes to `ghcr.io` using `GITHUB_TOKEN` — no secrets to configure. It only triggers when `Dockerfile` or the workflow file itself changes, and uses `type=gha` layer caching to skip recompiling NNG on repeat builds.
 
 ---
 
 ## mirai package overview
 
-`mirai` provides async evaluation of R expressions via `mirai()`, returning a mirai object whose result is retrieved with `[]`. Workers are managed via `daemons()`.
-
 Key functions:
+- `daemons(url = "tcp://0.0.0.0:port")` — make this R session listen for worker connections
 - `mirai(expr, ...)` — submit async expression, returns mirai object
-- `m[]` — collect result (blocks until ready or timeout)
-- `daemons(n)` — launch n local worker processes (process pool)
-- `daemons(url = "tcp://...")` — listen for remote workers
-- `daemon(url)` — connect a worker to a dispatcher
+- `m[]` — collect result (blocks until ready)
+- `daemon(url)` — connect this R process to a dispatcher as a worker (blocks forever)
 - `daemons(0)` — shut down all daemons
+- `status()` — show connected worker count and task queue state
 - `unresolved(m)` — non-blocking check if result is ready
 
 Transport is NNG (via `nanonext`). No forking — works on Windows.
 
-Integrates with:
-- `promises` — `.promise` method for Shiny async
-- `crew` — higher-level worker controller, used by `targets`
-- `parallel`/`foreach` — via crew adapters
+---
+
+## Worker connection flow
+
+```
+User's R session (any machine)
+  └─ daemons(url = "tcp://0.0.0.0:5555")     ← listens
+        ▲            ▲            ▲
+   worker-1      worker-2     worker-3        ← Docker containers
+   daemon("tcp://192.168.2.4:5555")           ← workers dial out
+```
+
+Workers dial the user's machine IP. The user's machine must have port 5555 reachable from wherever the workers run.
 
 ---
 
 ## Common tasks
 
 ### Update R version
-Change the `FROM rocker/r-ver:<version>` tag in `Dockerfile` (both stages must match).
+Change the `FROM rocker/r-ver:<version>` tag in `Dockerfile`.
 
 ### Add R packages
-Add to the `RUN Rscript -e "install.packages(...)"` line in the builder stage. No changes needed in the runtime stage — the full `/usr/local/lib/R/library` is copied.
+Add to the `RUN Rscript -e "install.packages(...)"` line. They install at build time with full build tooling available.
 
 ### Add system libraries
-- If needed only at build time: add to the builder stage `apt-get install` block.
-- If needed at runtime: add to the runtime stage `apt-get install` block.
+- Build-time only: add to the `apt-get install` block before the Rscript line.
+- Runtime: add to a second `apt-get install` block after the Rscript line (before purge).
 
-### Test the image locally
-```bash
-docker build -t mirai-r .
-docker run --rm -it mirai-r
-# Inside R:
-library(mirai)
-daemons(2)
-m <- mirai(1 + 1)
-m[]
-daemons(0)
-```
+### Test against a live worker pool
+
+1. In your R session: `daemons(url = "tcp://0.0.0.0:5555")`
+2. On worker machines: `MIRAI_HOST=<your-ip> docker compose -f docker-compose_example.yml up worker`
+3. Run: `source("test_workers.R")`
 
 ### Trigger a manual CI build
-Use `workflow_dispatch` from the GitHub Actions UI, or push a whitespace change to `Dockerfile`.
+Use `workflow_dispatch` from the GitHub Actions UI, or push any change to `Dockerfile`.
 
 ---
 
 ## What to avoid
 
-- Do not use `rocker/rstudio` or `rocker/tidyverse` as the base — they add hundreds of MB of tooling that mirai does not need.
-- Do not install packages in the runtime stage — compilation will fail without cmake/build tools. Always install in the builder stage.
-- Do not pin `libssl3` to a specific version — let apt resolve the correct version for the Ubuntu release used by the rocker base.
-- Do not add `daemons()` calls to the image entrypoint — daemon topology is user-defined at runtime.
+- Do not add a dispatcher container. mirai's dispatcher IS the calling R session — a separate container cannot serve this role.
+- Do not put `MIRAI_HOST` in `.env`. It is machine-specific and must be set at runtime.
+- Do not use `daemons(0)` in any container entrypoint or startup command — it is the shutdown signal and will immediately terminate any connected workers.
+- Do not use `rocker/rstudio` or `rocker/tidyverse` as the base — unnecessary bloat.
+- Do not install packages in a separate runtime stage — build tooling (cmake) is required and not present there.
+- Do not pin `libssl-dev` to a specific version — let apt resolve it.
