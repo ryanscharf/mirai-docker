@@ -13,9 +13,8 @@ services:
     command: >
       Rscript -e "
         library(mirai);
-        daemons(url = 'tcp://0.0.0.0:${MIRAI_PORT}');
-        cat('Dispatcher ready\n');
-        Sys.sleep(Inf)
+        cat('Starting dispatcher on port ${MIRAI_PORT}\n');
+        mirai:::dispatcher('tcp://0.0.0.0:${MIRAI_PORT}')
       "
     ports:
       - "${MIRAI_PORT}:${MIRAI_PORT}"
@@ -38,10 +37,14 @@ services:
         url <- paste0('tcp://', host, ':${MIRAI_PORT}');
         repeat {
           tryCatch(
-            { cat('Worker connecting to', url, '\n'); daemon(url) },
-            error = function(e) { cat('Error:', conditionMessage(e), '\n') }
+            {
+              cat('Connecting to', url, '\n');
+              result <- daemon(url);
+              cat('daemon() returned:', deparse(result), '\n')
+            },
+            error = function(e) cat('Error:', conditionMessage(e), '\n')
           );
-          cat('Disconnected, reconnecting in 2s...\n');
+          cat('Reconnecting in 2s...\n');
           Sys.sleep(2)
         }
       "
