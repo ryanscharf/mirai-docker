@@ -1,32 +1,17 @@
 services:
 
-  # Interactive R session with mirai loaded
+  # Your R session - this IS the dispatcher.
+  # Once inside, run: daemons(url = "tcp://0.0.0.0:5555")
+  # Workers will then connect to this session.
   r:
     image: ghcr.io/ryanscharf/mirai-docker:latest
     stdin_open: true
     tty: true
     command: R
-
-  # Dispatcher: accepts connections from workers and fans out mirai tasks
-  dispatcher:
-    image: ghcr.io/ryanscharf/mirai-docker:latest
-    command: >
-      Rscript -e "
-        library(mirai);
-        cat('Starting dispatcher on port ${MIRAI_PORT}\n');
-        mirai:::dispatcher('tcp://0.0.0.0:${MIRAI_PORT}')
-      "
     ports:
       - "${MIRAI_PORT}:${MIRAI_PORT}"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/${MIRAI_PORT:-5555}' 2>/dev/null || exit 1"]
-      interval: 2s
-      timeout: 3s
-      retries: 15
-      start_period: 5s
-    restart: unless-stopped
 
-  # Workers: connect back to dispatcher and execute mirai tasks
+  # Workers connect to MIRAI_HOST:MIRAI_PORT (wherever the R session is running)
   worker:
     image: ghcr.io/ryanscharf/mirai-docker:latest
     command: >
@@ -56,9 +41,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
-    depends_on:
-      dispatcher:
-        condition: service_healthy
     restart: on-failure
     deploy:
       replicas: ${MIRAI_WORKERS:-4}
