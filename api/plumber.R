@@ -13,30 +13,62 @@ docker_get <- function(path) {
 }
 
 docker_post <- function(path, body = NULL) {
-  args <- c("-s", "--unix-socket", SOCK, "-X", "POST")
+  args <- c("-s", "-i", "--unix-socket", SOCK, "-X", "POST")
   if (!is.null(body)) {
     args <- c(args,
               "-H", "Content-Type: application/json",
               "-d", toJSON(body, auto_unbox = TRUE))
   }
   args <- c(args, paste0("http://localhost", path))
-  out <- system2("curl", args, stdout = TRUE, stderr = FALSE)
-  if (length(out) == 0 || !nzchar(paste(out, collapse = ""))) return(list())
-  tryCatch(fromJSON(paste(out, collapse = ""), simplifyVector = FALSE),
-           error = function(e) list())
+  out  <- system2("curl", args, stdout = TRUE, stderr = FALSE)
+  raw  <- paste(out, collapse = "\n")
+  # Split HTTP headers from body on the blank line
+  body_text <- sub("^.*?\r\n\r\n", "", raw)
+  if (!nzchar(trimws(body_text))) return(list())
+  tryCatch(fromJSON(body_text, simplifyVector = FALSE),
+           error = function(e) list(.raw = body_text))
 }
 
 worker_name <- function(host, port, i) {
   sprintf("mirai-worker-%s-%s-%d", gsub("\\.", "-", host), port, i)
 }
 
-#* Test Docker socket and return version info
+#* Test Docker socket — version + raw create attempt
 #* @get /debug
 function() {
-  out <- system2("curl", c("-s", "--unix-socket", SOCK,
-                            "http://localhost/version"),
-                 stdout = TRUE, stderr = TRUE)
-  list(raw = paste(out, collapse = "\n"))
+  image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
+
+  version_out <- system2("curl", c("-s", "--unix-socket", SOCK,
+                                    "http://localhost/version"),
+                          stdout = TRUE, stderr = TRUE)
+
+  create_body <- toJSON(list(
+    Image      = image,
+    Env        = list("MIRAI_HOST=debug", "MIRAI_PORT=5555"),
+    Cmd        = list("Rscript", "/worker.R"),
+    HostConfig = list(AutoRemove = TRUE)
+  ), auto_unbox = TRUE)
+
+  create_out <- system2(
+    "curl",
+    c("-s", "-i", "--unix-socket", SOCK,
+      "-X", "POST",
+      "-H", "Content-Type: application/json",
+      "-d", create_body,
+      "http://localhost/containers/create?name=mirai-debug-delete-me"),
+    stdout = TRUE, stderr = TRUE
+  )
+
+  # Clean up if it actually created
+  system2("curl", c("-s", "--unix-socket", SOCK, "-X", "DELETE",
+                    "http://localhost/containers/mirai-debug-delete-me"),
+          stdout = FALSE, stderr = FALSE)
+
+  list(
+    version     = paste(version_out, collapse = "\n"),
+    create_raw  = paste(create_out,  collapse = "\n"),
+    create_body = create_body
+  )
 }
 
 #* Start workers for a dispatcher
