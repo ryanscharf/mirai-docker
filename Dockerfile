@@ -8,4 +8,6 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove cmake \
     && rm -rf /var/lib/apt/lists/*
 
+COPY worker.R /worker.R
+
 CMD ["R"]

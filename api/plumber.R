@@ -4,26 +4,11 @@ worker_name <- function(host, port, i) {
   sprintf("mirai-worker-%s-%s-%d", gsub("\\.", "-", host), port, i)
 }
 
-worker_cmd <- function(host, port) {
-  sprintf(
-    "library(mirai);
-     url <- 'tcp://%s:%d';
-     repeat {
-       connected <- tryCatch({ daemon(url); TRUE },
-         error = function(e) { cat('Error:', conditionMessage(e), '\\n'); FALSE });
-       if (connected) { cat('Dispatcher closed. Exiting.\\n'); break };
-       cat('Retrying in 2s...\\n');
-       Sys.sleep(2)
-     }",
-    host, as.integer(port)
-  )
-}
-
 #* Start workers for a dispatcher
 #* @post /workers/start
 function(dispatcher, n = 4, port = 5555) {
-  n    <- as.integer(n)
-  port <- as.integer(port)
+  n     <- as.integer(n)
+  port  <- as.integer(port)
   image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
 
   started <- character(0)
@@ -36,11 +21,12 @@ function(dispatcher, n = 4, port = 5555) {
       c("run", "--rm", "-d",
         "--name", name,
         "-e", paste0("MIRAI_HOST=", dispatcher),
+        "-e", paste0("MIRAI_PORT=", port),
         image,
-        "Rscript", "-e", worker_cmd(dispatcher, port)),
+        "Rscript", "/worker.R"),
       stdout = TRUE, stderr = TRUE
     )
-    if (attr(result, "status") %in% c(0, NULL)) {
+    if (isTRUE(attr(result, "status") == 0) || is.null(attr(result, "status"))) {
       started <- c(started, name)
     } else {
       failed <- c(failed, name)
