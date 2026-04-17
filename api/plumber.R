@@ -1,4 +1,30 @@
 library(plumber)
+library(jsonlite)
+
+SOCK <- "/var/run/docker.sock"
+
+docker_get <- function(path) {
+  out <- system2("curl", c("-s", "--unix-socket", SOCK,
+                            paste0("http://localhost", path)),
+                 stdout = TRUE, stderr = FALSE)
+  if (length(out) == 0 || !nzchar(paste(out, collapse = ""))) return(list())
+  tryCatch(fromJSON(paste(out, collapse = ""), simplifyVector = FALSE),
+           error = function(e) list())
+}
+
+docker_post <- function(path, body = NULL) {
+  args <- c("-s", "--unix-socket", SOCK, "-X", "POST")
+  if (!is.null(body)) {
+    args <- c(args,
+              "-H", "Content-Type: application/json",
+              "-d", toJSON(body, auto_unbox = TRUE))
+  }
+  args <- c(args, paste0("http://localhost", path))
+  out <- system2("curl", args, stdout = TRUE, stderr = FALSE)
+  if (length(out) == 0 || !nzchar(paste(out, collapse = ""))) return(list())
+  tryCatch(fromJSON(paste(out, collapse = ""), simplifyVector = FALSE),
+           error = function(e) list())
+}
 
 worker_name <- function(host, port, i) {
   sprintf("mirai-worker-%s-%s-%d", gsub("\\.", "-", host), port, i)
@@ -15,18 +41,19 @@ function(dispatcher, n = 4, port = 5555) {
   failed  <- character(0)
 
   for (i in seq_len(n)) {
-    name   <- worker_name(dispatcher, port, i)
-    result <- system2(
-      "docker",
-      c("run", "--rm", "-d",
-        "--name", name,
-        "-e", paste0("MIRAI_HOST=", dispatcher),
-        "-e", paste0("MIRAI_PORT=", port),
-        image,
-        "Rscript", "/worker.R"),
-      stdout = TRUE, stderr = TRUE
+    name <- worker_name(dispatcher, port, i)
+    resp <- docker_post(
+      paste0("/containers/create?name=", name),
+      list(
+        Image      = image,
+        Env        = list(paste0("MIRAI_HOST=", dispatcher),
+                          paste0("MIRAI_PORT=", port)),
+        Cmd        = list("Rscript", "/worker.R"),
+        HostConfig = list(AutoRemove = TRUE)
+      )
     )
-    if (isTRUE(attr(result, "status") == 0) || is.null(attr(result, "status"))) {
+    if (!is.null(resp$Id)) {
+      docker_post(paste0("/containers/", resp$Id, "/start"))
       started <- c(started, name)
     } else {
       failed <- c(failed, name)
@@ -41,13 +68,12 @@ function(dispatcher, n = 4, port = 5555) {
 function(dispatcher, port = 5555) {
   port    <- as.integer(port)
   pattern <- sprintf("mirai-worker-%s-%s", gsub("\\.", "-", dispatcher), port)
-  ids     <- system2("docker", c("ps", "-q", "--filter", paste0("name=", pattern)),
-                     stdout = TRUE, stderr = FALSE)
-  ids     <- ids[nchar(ids) > 0]
+  filters <- URLencode(toJSON(list(name = list(pattern)), auto_unbox = TRUE),
+                       reserved = TRUE)
+  containers <- docker_get(paste0("/containers/json?filters=", filters))
 
-  if (length(ids) > 0) {
-    system2("docker", c("stop", ids), stdout = FALSE, stderr = FALSE)
-  }
+  ids <- vapply(containers, function(c) c$Id, character(1))
+  for (id in ids) docker_post(paste0("/containers/", id, "/stop"))
 
   list(stopped = length(ids), dispatcher = dispatcher, port = port)
 }
@@ -55,11 +81,11 @@ function(dispatcher, port = 5555) {
 #* List all running mirai worker containers
 #* @get /workers
 function() {
-  lines <- system2(
-    "docker",
-    c("ps", "--filter", "name=mirai-worker",
-      "--format", "{{.Names}}\t{{.Status}}"),
-    stdout = TRUE, stderr = FALSE
-  )
-  list(workers = lines[nchar(lines) > 0])
+  filters    <- URLencode(toJSON(list(name = list("mirai-worker")), auto_unbox = TRUE),
+                          reserved = TRUE)
+  containers <- docker_get(paste0("/containers/json?filters=", filters))
+  workers    <- vapply(containers, function(c) {
+    paste0(sub("^/", "", c$Names[[1]]), "\t", c$Status)
+  }, character(1))
+  list(workers = workers)
 }
