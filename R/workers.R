@@ -43,7 +43,7 @@ stop_workers <- function(dispatcher_host,
     httr2::req_perform() |>
     httr2::resp_body_json()
 
-  message(sprintf("Stopped %d worker(s) for %s:%d", resp$stopped, dispatcher_host, port))
+  message(sprintf("Stopped %d worker(s) for %s:%d", as.integer(resp$stopped), dispatcher_host, port))
   invisible(resp)
 }
 
