@@ -22,8 +22,11 @@ start_workers <- function(dispatcher_host, n = 4,
 
   if (length(resp$started) > 0)
     message(sprintf("Started %d worker(s) -> %s:%d", length(resp$started), dispatcher_host, port))
-  if (length(resp$failed) > 0)
+  if (length(resp$failed) > 0) {
     warning(sprintf("%d worker(s) failed to start", length(resp$failed)))
+    for (nm in names(resp$errors))
+      message(sprintf("  %s: %s", nm, resp$errors[[nm]]))
+  }
 
   invisible(resp)
 }
