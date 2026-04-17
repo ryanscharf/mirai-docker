@@ -10,7 +10,7 @@ RUN apt-get update \
 
 # Install pak from P3M noble binaries, then use pak to install plumber
 RUN Rscript -e "install.packages('pak', repos = 'https://packagemanager.posit.co/cran/__linux__/noble/latest')"
-RUN Rscript -e "pak::pkg_install('plumber')"
+RUN Rscript -e "pak::pkg_install(c('plumber', 'curl'))"
 
 COPY plumber.R /api/plumber.R
 

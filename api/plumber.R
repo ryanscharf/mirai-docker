@@ -1,33 +1,24 @@
 library(plumber)
 library(jsonlite)
+library(curl)
 
 SOCK <- "/var/run/docker.sock"
 
-docker_get <- function(path) {
-  out <- system2("curl", c("-s", "--unix-socket", SOCK,
-                            paste0("http://localhost", path)),
-                 stdout = TRUE, stderr = FALSE)
-  if (length(out) == 0 || !nzchar(paste(out, collapse = ""))) return(list())
-  tryCatch(fromJSON(paste(out, collapse = ""), simplifyVector = FALSE),
-           error = function(e) list())
+docker_request <- function(method, path, body = NULL) {
+  h <- new_handle(unix_socket_path = SOCK, customrequest = method)
+  if (!is.null(body)) {
+    handle_setheaders(h, "Content-Type" = "application/json")
+    handle_setopt(h, postfields = toJSON(body, auto_unbox = TRUE))
+  }
+  resp     <- curl_fetch_memory(paste0("http://localhost", path), handle = h)
+  raw_text <- rawToChar(resp$content)
+  if (!nzchar(raw_text)) return(list())
+  tryCatch(fromJSON(raw_text, simplifyVector = FALSE),
+           error = function(e) list(.raw = raw_text))
 }
 
-docker_post <- function(path, body = NULL) {
-  args <- c("-s", "-i", "--unix-socket", SOCK, "-X", "POST")
-  if (!is.null(body)) {
-    args <- c(args,
-              "-H", "Content-Type: application/json",
-              "-d", toJSON(body, auto_unbox = TRUE))
-  }
-  args <- c(args, paste0("http://localhost", path))
-  out  <- system2("curl", args, stdout = TRUE, stderr = FALSE)
-  raw  <- paste(out, collapse = "\n")
-  # Split HTTP headers from body on the blank line
-  body_text <- sub("^.*?\r\n\r\n", "", raw)
-  if (!nzchar(trimws(body_text))) return(list())
-  tryCatch(fromJSON(body_text, simplifyVector = FALSE),
-           error = function(e) list(.raw = body_text))
-}
+docker_get  <- function(path)             docker_request("GET",  path)
+docker_post <- function(path, body = NULL) docker_request("POST", path, body)
 
 worker_name <- function(host, port, i) {
   sprintf("mirai-worker-%s-%s-%d", gsub("\\.", "-", host), port, i)
@@ -38,36 +29,29 @@ worker_name <- function(host, port, i) {
 function() {
   image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
 
-  version_out <- system2("curl", c("-s", "--unix-socket", SOCK,
-                                    "http://localhost/version"),
-                          stdout = TRUE, stderr = TRUE)
+  version <- docker_get("/version")
 
-  create_body <- toJSON(list(
+  h <- new_handle(unix_socket_path = SOCK, customrequest = "POST")
+  handle_setheaders(h, "Content-Type" = "application/json")
+  handle_setopt(h, postfields = toJSON(list(
     Image      = image,
     Env        = list("MIRAI_HOST=debug", "MIRAI_PORT=5555"),
     Cmd        = list("Rscript", "/worker.R"),
     HostConfig = list(AutoRemove = TRUE)
-  ), auto_unbox = TRUE)
-
-  create_out <- system2(
-    "curl",
-    c("-s", "-i", "--unix-socket", SOCK,
-      "-X", "POST",
-      "-H", "Content-Type: application/json",
-      "-d", create_body,
-      "http://localhost/containers/create?name=mirai-debug-delete-me"),
-    stdout = TRUE, stderr = TRUE
+  ), auto_unbox = TRUE))
+  raw_resp <- curl_fetch_memory(
+    "http://localhost/containers/create?name=mirai-debug-delete-me",
+    handle = h
   )
+  create_raw <- rawToChar(raw_resp$content)
 
-  # Clean up if it actually created
-  system2("curl", c("-s", "--unix-socket", SOCK, "-X", "DELETE",
-                    "http://localhost/containers/mirai-debug-delete-me"),
-          stdout = FALSE, stderr = FALSE)
+  # Clean up
+  docker_request("DELETE", "/containers/mirai-debug-delete-me")
 
   list(
-    version     = paste(version_out, collapse = "\n"),
-    create_raw  = paste(create_out,  collapse = "\n"),
-    create_body = create_body
+    status       = raw_resp$status_code,
+    create_raw   = create_raw,
+    docker_version = version$Version
   )
 }
 
@@ -78,8 +62,7 @@ function(dispatcher, n = 4, port = 5555) {
   port  <- as.integer(port)
   image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
 
-  # Pull image so /containers/create doesn't 404 on a cold TrueNAS host.
-  # This blocks until the pull completes (no-op if already present).
+  # Pull image so /containers/create doesn't 404 on a cold host.
   docker_post(paste0("/images/create?fromImage=",
                      URLencode(image, reserved = TRUE)))
 
@@ -103,8 +86,9 @@ function(dispatcher, n = 4, port = 5555) {
       docker_post(paste0("/containers/", resp$Id, "/start"))
       started <- c(started, name)
     } else {
-      failed        <- c(failed, name)
-      errors[[name]] <- toJSON(resp, auto_unbox = TRUE)
+      failed         <- c(failed, name)
+      errors[[name]] <- if (!is.null(resp$message)) resp$message else
+                          if (!is.null(resp$.raw)) resp$.raw else "unknown"
     }
   }
 
