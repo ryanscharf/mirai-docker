@@ -27,19 +27,22 @@ Workers can run on the same machine or on any machine that can reach your R sess
 
 ---
 
-## Image
+## Images
 
-```
-ghcr.io/ryanscharf/mirai-docker:latest
-```
+| Image | Description |
+|---|---|
+| `ghcr.io/ryanscharf/mirai-docker:latest` | Worker image — runs `daemon()` and connects to a dispatcher |
+| `ghcr.io/ryanscharf/mirai-docker-api:latest` | API image — Plumber API to manage worker containers on demand |
 
-Built automatically on every push to `main` via GitHub Actions.
+Both are built automatically on every push to `main` via GitHub Actions.
 
 ---
 
 ## Worker Management API
 
 A Plumber API runs as a container on your worker host (e.g. TrueNAS). It exposes endpoints to start, stop, and list worker containers on demand from any R session — no SSH or manual Docker commands needed.
+
+The API talks to the Docker daemon directly via its HTTP API over the mounted Unix socket (`/var/run/docker.sock`), using the `curl` R package. Every request is logged to stdout with a UTC timestamp and the caller's IP.
 
 ### Deploy the API (on TrueNAS)
 
@@ -53,12 +56,11 @@ docker compose -f docker-compose_example.yml up -d mirai-api
 library(mirai)
 source("R/workers.R")   # loads start_workers(), stop_workers(), list_workers()
 
-# Set where the API lives (or set MIRAI_API_HOST env var)
-Sys.setenv(MIRAI_API_HOST = "192.168.2.66")
+Sys.setenv(MIRAI_API_HOST = "192.168.2.66", MIRAI_API_PORT = "8089")
 
 daemons(url = "tcp://0.0.0.0:5555")     # your session listens for workers
-start_workers("192.168.2.4", n = 6)     # API starts 6 workers pointing at you
-# > Started 6 worker(s) -> 192.168.2.4:5555
+start_workers("192.168.2.4", n = 4)     # API starts 4 workers pointing at you
+# Started 4 worker(s) -> 192.168.2.4:5555
 
 status()                                 # confirm connections
 
@@ -66,17 +68,33 @@ status()                                 # confirm connections
 
 daemons(0)                               # signals workers to exit (auto-removed)
 stop_workers("192.168.2.4")             # cleanup any that didn't exit cleanly
+# Stopped 4 worker(s) for 192.168.2.4:5555
 ```
 
-Multiple R sessions can each request their own workers simultaneously — they're isolated by container name.
+Multiple R sessions can each request their own workers simultaneously — they're isolated by container name (`mirai-worker-<ip>-<port>-<n>`).
 
 ### API endpoints
 
 | Method | Path | Body | Description |
 |---|---|---|---|
-| `POST` | `/workers/start` | `{dispatcher, n, port}` | Start n workers pointing at dispatcher |
-| `POST` | `/workers/stop` | `{dispatcher, port}` | Stop and remove workers for a dispatcher |
+| `POST` | `/workers/start` | `{dispatcher, n, port}` | Pull image if needed, start n workers pointing at dispatcher |
+| `POST` | `/workers/stop` | `{dispatcher, port}` | Stop all workers for a dispatcher |
 | `GET` | `/workers` | — | List all running worker containers |
+| `GET` | `/debug` | — | Test Docker socket connectivity and attempt a create |
+
+All responses include `received_at` (UTC timestamp) and `from` (caller IP).
+
+### API container logs
+
+```
+[2026-04-17T12:22:18Z] POST /workers/start from 192.168.2.4
+  dispatcher=192.168.2.4  n=4  port=5555  image=ghcr.io/ryanscharf/mirai-docker:latest
+  started mirai-worker-192-168-2-4-5555-1
+  started mirai-worker-192-168-2-4-5555-2
+  ...
+[2026-04-17T12:22:23Z] POST /workers/stop from 192.168.2.4
+  stopped 413f73ce4c6a...
+```
 
 ---
 
@@ -84,33 +102,26 @@ Multiple R sessions can each request their own workers simultaneously — they'r
 
 ### 1. Start your R session as the dispatcher
 
-In Positron, RStudio, or any R session on your machine:
-
 ```r
 library(mirai)
+source("R/workers.R")
+
+Sys.setenv(MIRAI_API_HOST = "192.168.2.66", MIRAI_API_PORT = "8089")
 daemons(url = "tcp://0.0.0.0:5555")
 ```
 
 Your session is now listening for workers on port 5555.
 
-### 2. Start workers
+### 2. Start workers via the API
 
-**Locally (same machine):**
-```bash
-MIRAI_HOST=127.0.0.1 docker compose -f docker-compose_example.yml up worker
+```r
+start_workers("192.168.2.4", n = 4)
+# Started 4 worker(s) -> 192.168.2.4:5555
 ```
 
-**Remote machine (e.g. a NAS or server at 192.168.x.x):**
-```bash
-# On the remote machine — point workers at your machine's LAN IP
-MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
-```
-
-`MIRAI_HOST` is always the IP of the machine running your R session. Workers connect to it, not the other way around.
+`"192.168.2.4"` is the LAN IP of the machine running your R session (the dispatcher). Workers connect back to this address.
 
 ### 3. Check status
-
-Back in your R session:
 
 ```r
 status()
@@ -128,6 +139,29 @@ jobs <- lapply(1:20, \(x) mirai(x^2, x = x))
 unlist(lapply(jobs, `[]`))
 ```
 
+### 5. Clean up
+
+```r
+daemons(0)               # dispatcher closes — workers exit cleanly (auto-removed via --rm)
+stop_workers("192.168.2.4")   # belt-and-suspenders for any that didn't exit
+```
+
+---
+
+## Testing
+
+`test_workers.R` runs a full integration test against a live worker pool. Edit the config block at the top to match your environment, then:
+
+```r
+source("test_workers.R")
+```
+
+Tests:
+1. **Smoke test** — each worker reports its hostname
+2. **Parallel computation** — 20 tasks (`x^2`) distributed across workers
+3. **Parallelism timing** — 4 × 1s sleeps should complete in ~1s total
+4. **Error handling** — workers survive and recover from a task that calls `stop()`
+
 ---
 
 ## Configuration
@@ -136,55 +170,12 @@ Variables are set in `.env` (copy from `.env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `MIRAI_PORT` | `5555` | Port your R session listens on and workers dial to |
-| `MIRAI_WORKERS` | `4` | Number of worker replicas (local testing only) |
+| `MIRAI_PORT` | `5555` | Port the dispatcher listens on and workers dial to |
+| `MIRAI_WORKERS` | `4` | Reserved for local testing reference |
 | `MIRAI_API_PORT` | `8080` | Port the worker management API listens on |
 | `MIRAI_HOST` | *(required at runtime)* | IP of the machine running the R session |
 
-`MIRAI_HOST` is intentionally not in `.env` — it depends on which machine is running the R session and changes per deployment.
-
----
-
-## docker-compose_example.yml
-
-The compose file only contains the `worker` service. There is no dispatcher service — your R session fills that role.
-
-```yaml
-# Start your R session first:
-#   daemons(url = "tcp://0.0.0.0:5555")
-# Then start workers pointing at your machine:
-#   MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
-```
-
-Scale workers up or down:
-```bash
-MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker --scale worker=8
-```
-
----
-
-## Testing
-
-`test_workers.R` runs four tests against a live worker pool:
-
-```r
-# Edit the config block at the top first:
-dispatcher_host <- "0.0.0.0"   # listen on all interfaces
-dispatcher_port <- 5555
-n_timing_workers <- 4
-```
-
-Run from your R session:
-```r
-source("test_workers.R")
-```
-
-The script will:
-1. Call `daemons()` to start listening
-2. Wait up to 60s for workers to connect
-3. Run smoke tests: hostnames, parallel computation, timing, error recovery
-
-Start workers on your remote machine before or after running the script — the script waits for them.
+`MIRAI_HOST` is intentionally absent from `.env` — it is machine-specific and must be passed at runtime. Workers fail immediately with a clear error if it is not set.
 
 ---
 
@@ -232,13 +223,23 @@ controller$pop()$result
 
 ## Image Details
 
+### Worker image (`ghcr.io/ryanscharf/mirai-docker`)
+
 | Property | Value |
 |---|---|
 | Base image | `rocker/r-ver:4.4.2` |
 | Build strategy | Single stage, cmake purged post-install |
 | R packages | `mirai`, `nanonext` |
-| Runtime system deps | `libssl-dev` |
-| Default entrypoint | `R` (interactive) |
+| Entrypoint script | `worker.R` — connects to dispatcher, retries on failure, exits cleanly on close |
+
+### API image (`ghcr.io/ryanscharf/mirai-docker-api`)
+
+| Property | Value |
+|---|---|
+| Base image | `rocker/r-ver:4.4.2` |
+| R packages | `plumber`, `curl`, `jsonlite` |
+| Package installer | `pak` from Posit Package Manager (noble binaries — no compilation) |
+| Docker access | Via Docker Engine HTTP API over mounted Unix socket — no Docker CLI |
 
 ### Why not two-stage?
 
@@ -250,7 +251,7 @@ controller$pop()$result
 
 ```bash
 docker build -t mirai-r .
-docker run --rm -it mirai-r
+docker build -t mirai-api ./api
 ```
 
 ---
