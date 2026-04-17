@@ -3,8 +3,7 @@ services:
   # Worker management API — exposes /workers/start, /workers/stop, /workers (list)
   # Deploy this on TrueNAS (or wherever workers run). Needs Docker socket access.
   mirai-api:
-    build:
-      context: ./api
+    image: ghcr.io/ryanscharf/mirai-docker-api:latest
     environment:
       - MIRAI_API_PORT=${MIRAI_API_PORT:-8080}
       - MIRAI_IMAGE=ghcr.io/ryanscharf/mirai-docker:latest
