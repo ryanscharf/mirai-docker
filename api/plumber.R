@@ -72,7 +72,7 @@ function(dispatcher, n = 4, port = 5555) {
       started <- c(started, name)
     } else {
       failed        <- c(failed, name)
-      errors[[name]] <- if (!is.null(resp$message)) resp$message else "no Id in response"
+      errors[[name]] <- toJSON(resp, auto_unbox = TRUE)
     }
   }
 
