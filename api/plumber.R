@@ -17,16 +17,34 @@ docker_request <- function(method, path, body = NULL) {
            error = function(e) list(.raw = raw_text))
 }
 
-docker_get  <- function(path)             docker_request("GET",  path)
+docker_get  <- function(path)              docker_request("GET",  path)
 docker_post <- function(path, body = NULL) docker_request("POST", path, body)
 
 worker_name <- function(host, port, i) {
   sprintf("mirai-worker-%s-%s-%d", gsub("\\.", "-", host), port, i)
 }
 
+request_meta <- function(req) {
+  list(
+    received_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+    from        = req$REMOTE_ADDR
+  )
+}
+
+#* Log every incoming request
+#* @filter logger
+function(req) {
+  cat(sprintf("[%s] %s %s from %s\n",
+              format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+              req$REQUEST_METHOD,
+              req$PATH_INFO,
+              req$REMOTE_ADDR))
+  plumber::forward()
+}
+
 #* Test Docker socket — version + raw create attempt
 #* @get /debug
-function() {
+function(req) {
   image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
 
   version <- docker_get("/version")
@@ -45,24 +63,26 @@ function() {
   )
   create_raw <- rawToChar(raw_resp$content)
 
-  # Clean up
   docker_request("DELETE", "/containers/mirai-debug-delete-me")
 
-  list(
-    status       = raw_resp$status_code,
-    create_raw   = create_raw,
-    docker_version = version$Version
-  )
+  c(request_meta(req),
+    list(
+      status         = raw_resp$status_code,
+      create_raw     = create_raw,
+      docker_version = version$Version
+    ))
 }
 
 #* Start workers for a dispatcher
 #* @post /workers/start
-function(dispatcher, n = 4, port = 5555) {
+function(req, dispatcher, n = 4, port = 5555) {
   n     <- as.integer(n)
   port  <- as.integer(port)
   image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
 
-  # Pull image so /containers/create doesn't 404 on a cold host.
+  cat(sprintf("  dispatcher=%s  n=%d  port=%d  image=%s\n",
+              dispatcher, n, port, image))
+
   docker_post(paste0("/images/create?fromImage=",
                      URLencode(image, reserved = TRUE)))
 
@@ -85,20 +105,23 @@ function(dispatcher, n = 4, port = 5555) {
     if (!is.null(resp$Id)) {
       docker_post(paste0("/containers/", resp$Id, "/start"))
       started <- c(started, name)
+      cat(sprintf("  started %s\n", name))
     } else {
       failed         <- c(failed, name)
       errors[[name]] <- if (!is.null(resp$message)) resp$message else
                           if (!is.null(resp$.raw)) resp$.raw else "unknown"
+      cat(sprintf("  FAILED  %s: %s\n", name, errors[[name]]))
     }
   }
 
-  list(started = started, failed = failed, errors = errors,
-       dispatcher = dispatcher, port = port)
+  c(request_meta(req),
+    list(started = started, failed = failed, errors = errors,
+         dispatcher = dispatcher, port = port))
 }
 
 #* Stop workers for a dispatcher
 #* @post /workers/stop
-function(dispatcher, port = 5555) {
+function(req, dispatcher, port = 5555) {
   port    <- as.integer(port)
   pattern <- sprintf("mirai-worker-%s-%s", gsub("\\.", "-", dispatcher), port)
   filters <- URLencode(toJSON(list(name = list(pattern)), auto_unbox = TRUE),
@@ -106,19 +129,24 @@ function(dispatcher, port = 5555) {
   containers <- docker_get(paste0("/containers/json?filters=", filters))
 
   ids <- vapply(containers, function(c) c$Id, character(1))
-  for (id in ids) docker_post(paste0("/containers/", id, "/stop"))
+  for (id in ids) {
+    docker_post(paste0("/containers/", id, "/stop"))
+    cat(sprintf("  stopped %s\n", id))
+  }
 
-  list(stopped = length(ids), dispatcher = dispatcher, port = port)
+  c(request_meta(req),
+    list(stopped = length(ids), dispatcher = dispatcher, port = port))
 }
 
 #* List all running mirai worker containers
 #* @get /workers
-function() {
+function(req) {
   filters    <- URLencode(toJSON(list(name = list("mirai-worker")), auto_unbox = TRUE),
                           reserved = TRUE)
   containers <- docker_get(paste0("/containers/json?filters=", filters))
   workers    <- vapply(containers, function(c) {
     paste0(sub("^/", "", c$Names[[1]]), "\t", c$Status)
   }, character(1))
-  list(workers = workers)
+
+  c(request_meta(req), list(workers = workers))
 }
