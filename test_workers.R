@@ -7,7 +7,11 @@ dispatcher_host  <- "192.168.2.4"   # your machine's LAN IP (workers dial back t
 dispatcher_port  <- 5555            # must match MIRAI_PORT in .env
 n_workers        <- 4               # how many workers to spin up for the test
 n_timing_workers <- 4               # expected worker count for the parallelism timing test
+api_host         <- "192.168.2.66"  # TrueNAS IP (where the Plumber API is running)
+api_port         <- 8080            # must match MIRAI_API_PORT in .env
 # ----------------------
+
+Sys.setenv(MIRAI_API_HOST = api_host, MIRAI_API_PORT = api_port)
 
 wait_for_workers <- function(n, timeout = 60, poll = 0.5) {
   deadline <- Sys.time() + timeout
