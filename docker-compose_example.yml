@@ -1,10 +1,22 @@
 services:
 
-  # Workers connect to your local R session (the dispatcher).
-  # Start the dispatcher locally first:
-  #   library(mirai)
-  #   daemons(url = "tcp://0.0.0.0:5555")
-  # Then: docker compose -f docker-compose_example.yml up -d
+  # Worker management API — exposes /workers/start, /workers/stop, /workers (list)
+  # Deploy this on TrueNAS (or wherever workers run). Needs Docker socket access.
+  mirai-api:
+    build:
+      context: ./api
+    environment:
+      - MIRAI_API_PORT=${MIRAI_API_PORT:-8080}
+      - MIRAI_IMAGE=ghcr.io/ryanscharf/mirai-docker:latest
+    ports:
+      - "${MIRAI_API_PORT:-8080}:${MIRAI_API_PORT:-8080}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # Workers are started on-demand by the API — not by docker compose up.
+  # This service exists for local testing only.
+  # For production use, workers are launched by POSTing to /workers/start.
   worker:
     image: ghcr.io/ryanscharf/mirai-docker:latest
     command: >
@@ -14,15 +26,12 @@ services:
         if (host == '') stop('MIRAI_HOST is not set');
         url <- paste0('tcp://', host, ':${MIRAI_PORT}');
         repeat {
-          tryCatch(
-            {
-              cat('Connecting to', url, '\n');
-              result <- daemon(url);
-              cat('daemon() returned:', deparse(result), '\n')
-            },
-            error = function(e) cat('Error:', conditionMessage(e), '\n')
+          connected <- tryCatch(
+            { cat('Connecting to', url, '\n'); daemon(url); TRUE },
+            error = function(e) { cat('Error:', conditionMessage(e), '\n'); FALSE }
           );
-          cat('Reconnecting in 2s...\n');
+          if (connected) { cat('Dispatcher closed. Exiting.\n'); break };
+          cat('Retrying in 2s...\n');
           Sys.sleep(2)
         }
       "

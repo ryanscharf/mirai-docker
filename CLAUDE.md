@@ -16,10 +16,15 @@ A minimal Docker image that packages the [`mirai`](https://shikokuchuo.net/mirai
 .
 ├── Dockerfile                        # Single-stage build: installs mirai, purges cmake
 ├── .dockerignore
-├── .env                              # MIRAI_PORT and MIRAI_WORKERS (not committed)
+├── .env                              # MIRAI_PORT, MIRAI_WORKERS, MIRAI_API_PORT (not committed)
 ├── .env.example                      # Reference copy of .env
-├── docker-compose_example.yml        # Worker service only — no dispatcher
+├── docker-compose_example.yml        # mirai-api service + worker service (local testing)
 ├── test_workers.R                    # Live integration test for a running worker pool
+├── api/
+│   ├── Dockerfile                    # API image: rocker/r-ver + plumber + docker.io CLI
+│   └── plumber.R                     # Plumber API: /workers/start, /workers/stop, /workers
+├── R/
+│   └── workers.R                     # R helpers: start_workers(), stop_workers(), list_workers()
 ├── .github/
 │   └── workflows/
 │       └── docker-build.yml          # Builds and pushes to ghcr.io on push to main
@@ -108,6 +113,15 @@ Add to the `RUN Rscript -e "install.packages(...)"` line. They install at build 
 Use `workflow_dispatch` from the GitHub Actions UI, or push any change to `Dockerfile`.
 
 ---
+
+## Worker management API
+
+A Plumber API (`api/plumber.R`) runs as a container on the worker host with the Docker socket mounted. It starts/stops worker containers on demand in response to HTTP calls from R sessions.
+
+- Workers are started via `docker run --rm -d` — the `--rm` flag means containers are automatically removed when they exit, so there's no accumulation of stopped containers.
+- Workers exit cleanly (code 0) when the dispatcher calls `daemons(0)`. `restart: on-failure` does not trigger on clean exits, so workers don't respawn after the session ends.
+- `R/workers.R` provides `start_workers()`, `stop_workers()`, `list_workers()` — source it in any R session.
+- `MIRAI_API_HOST` and `MIRAI_API_PORT` env vars control where `R/workers.R` points. Defaults: `192.168.2.66:8080`.
 
 ## What to avoid
 

@@ -37,6 +37,49 @@ Built automatically on every push to `main` via GitHub Actions.
 
 ---
 
+## Worker Management API
+
+A Plumber API runs as a container on your worker host (e.g. TrueNAS). It exposes endpoints to start, stop, and list worker containers on demand from any R session — no SSH or manual Docker commands needed.
+
+### Deploy the API (on TrueNAS)
+
+```bash
+docker compose -f docker-compose_example.yml up -d mirai-api
+```
+
+### Use from R (Positron or any IDE)
+
+```r
+library(mirai)
+source("R/workers.R")   # loads start_workers(), stop_workers(), list_workers()
+
+# Set where the API lives (or set MIRAI_API_HOST env var)
+Sys.setenv(MIRAI_API_HOST = "192.168.2.66")
+
+daemons(url = "tcp://0.0.0.0:5555")     # your session listens for workers
+start_workers("192.168.2.4", n = 6)     # API starts 6 workers pointing at you
+# > Started 6 worker(s) -> 192.168.2.4:5555
+
+status()                                 # confirm connections
+
+# ... do work ...
+
+daemons(0)                               # signals workers to exit (auto-removed)
+stop_workers("192.168.2.4")             # cleanup any that didn't exit cleanly
+```
+
+Multiple R sessions can each request their own workers simultaneously — they're isolated by container name.
+
+### API endpoints
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| `POST` | `/workers/start` | `{dispatcher, n, port}` | Start n workers pointing at dispatcher |
+| `POST` | `/workers/stop` | `{dispatcher, port}` | Stop and remove workers for a dispatcher |
+| `GET` | `/workers` | — | List all running worker containers |
+
+---
+
 ## Quick Start
 
 ### 1. Start your R session as the dispatcher
@@ -94,14 +137,11 @@ Variables are set in `.env` (copy from `.env.example`):
 | Variable | Default | Description |
 |---|---|---|
 | `MIRAI_PORT` | `5555` | Port your R session listens on and workers dial to |
-| `MIRAI_WORKERS` | `4` | Number of worker replicas to start |
+| `MIRAI_WORKERS` | `4` | Number of worker replicas (local testing only) |
+| `MIRAI_API_PORT` | `8080` | Port the worker management API listens on |
 | `MIRAI_HOST` | *(required at runtime)* | IP of the machine running the R session |
 
-`MIRAI_HOST` is intentionally not in `.env` — it depends on which machine is running the R session and changes per deployment. Pass it inline:
-
-```bash
-MIRAI_HOST=192.168.2.4 docker compose -f docker-compose_example.yml up worker
-```
+`MIRAI_HOST` is intentionally not in `.env` — it depends on which machine is running the R session and changes per deployment.
 
 ---
 
