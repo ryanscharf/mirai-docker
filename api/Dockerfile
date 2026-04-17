@@ -2,7 +2,6 @@ FROM rocker/r-ver:4.4.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        cmake \
         docker.io \
         libssl-dev \
         libcurl4-openssl-dev \
@@ -10,8 +9,10 @@ RUN apt-get update \
         libxml2-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Use Posit Package Manager for pre-compiled Linux binaries (no compilation needed)
 RUN Rscript -e " \
-        install.packages('plumber', repos = 'https://cloud.r-project.org'); \
+        options(repos = c(CRAN = 'https://packagemanager.posit.co/cran/__linux__/jammy/latest')); \
+        install.packages('plumber'); \
         stopifnot(requireNamespace('plumber', quietly = TRUE)) \
     "
 
