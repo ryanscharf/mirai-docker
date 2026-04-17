@@ -1,20 +1,14 @@
 FROM rocker/r-ver:4.4.2
 
+# Docker CLI — needed to manage worker containers via the mounted socket
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         docker.io \
-        libssl-dev \
-        libcurl4-openssl-dev \
-        libsodium-dev \
-        libxml2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Use Posit Package Manager for pre-compiled Linux binaries (no compilation needed)
-RUN Rscript -e " \
-        options(repos = c(CRAN = 'https://packagemanager.posit.co/cran/__linux__/jammy/latest')); \
-        install.packages('plumber'); \
-        stopifnot(requireNamespace('plumber', quietly = TRUE)) \
-    "
+# Install pak from P3M noble binaries, then use pak to install plumber
+RUN Rscript -e "install.packages('pak', repos = 'https://packagemanager.posit.co/cran/__linux__/noble/latest')"
+RUN Rscript -e "pak::pkg_install('plumber')"
 
 COPY plumber.R /api/plumber.R
 
