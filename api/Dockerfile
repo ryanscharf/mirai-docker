@@ -2,16 +2,18 @@ FROM rocker/r-ver:4.4.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        cmake \
         docker.io \
         libssl-dev \
         libcurl4-openssl-dev \
         libsodium-dev \
         libxml2-dev \
-    && Rscript -e " \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN Rscript -e " \
         install.packages('plumber', repos = 'https://cloud.r-project.org'); \
         stopifnot(requireNamespace('plumber', quietly = TRUE)) \
-    " \
-    && rm -rf /var/lib/apt/lists/*
+    "
 
 COPY plumber.R /api/plumber.R
 
