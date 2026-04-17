@@ -30,6 +30,15 @@ worker_name <- function(host, port, i) {
   sprintf("mirai-worker-%s-%s-%d", gsub("\\.", "-", host), port, i)
 }
 
+#* Test Docker socket and return version info
+#* @get /debug
+function() {
+  out <- system2("curl", c("-s", "--unix-socket", SOCK,
+                            "http://localhost/version"),
+                 stdout = TRUE, stderr = TRUE)
+  list(raw = paste(out, collapse = "\n"))
+}
+
 #* Start workers for a dispatcher
 #* @post /workers/start
 function(dispatcher, n = 4, port = 5555) {
@@ -37,8 +46,14 @@ function(dispatcher, n = 4, port = 5555) {
   port  <- as.integer(port)
   image <- Sys.getenv("MIRAI_IMAGE", "ghcr.io/ryanscharf/mirai-docker:latest")
 
+  # Pull image so /containers/create doesn't 404 on a cold TrueNAS host.
+  # This blocks until the pull completes (no-op if already present).
+  docker_post(paste0("/images/create?fromImage=",
+                     URLencode(image, reserved = TRUE)))
+
   started <- character(0)
   failed  <- character(0)
+  errors  <- list()
 
   for (i in seq_len(n)) {
     name <- worker_name(dispatcher, port, i)
@@ -56,11 +71,13 @@ function(dispatcher, n = 4, port = 5555) {
       docker_post(paste0("/containers/", resp$Id, "/start"))
       started <- c(started, name)
     } else {
-      failed <- c(failed, name)
+      failed        <- c(failed, name)
+      errors[[name]] <- if (!is.null(resp$message)) resp$message else "no Id in response"
     }
   }
 
-  list(started = started, failed = failed, dispatcher = dispatcher, port = port)
+  list(started = started, failed = failed, errors = errors,
+       dispatcher = dispatcher, port = port)
 }
 
 #* Stop workers for a dispatcher
