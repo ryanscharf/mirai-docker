@@ -77,7 +77,7 @@ cat(sprintf(
 cat("\n--- Error handling ---\n")
 m <- mirai(stop("intentional error"), .timeout = 3000)
 result <- m[]
-stopifnot(inherits(result, "mirai_error"))
+stopifnot(is_mirai_error(result))
 cat("Worker survived an error: PASSED\n")
 
 cat("\n--- All tests complete ---\n")
